@@ -1,0 +1,33 @@
+# Python Environment
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / Packaging
+dist/
+build/
+*.egg-info/
+
+# Excel & Data (Crucial for your project)
+# Prevents actual data files from being accidentally committed
+*.xlsx
+*.xls
+*.csv
+*.ods
+~*
+
+# Environment Variables & Secrets
+.env
+.venv
+.env.local
+
+# IDE Specific
+.vscode/
+.idea/
+.DS_Store
+
+# FastAPI / Log files
+*.log
