@@ -1,25 +1,69 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
-import { Upload, AlertCircle, CheckCircle } from "lucide-react";
+import { Upload, FileText } from "lucide-react";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ||
   "http://localhost:8000";
 
 type FileUploaderProps = {
-  onSuccess: (rowCount: number, columns: string[]) => void;
+  onSuccess: (rowCount: number, columns: string[], fileName: string) => void;
   onError: (message: string) => void;
+  accept?: string; // e.g., ".csv,.xlsx"
+  title?: string;
+  description?: string;
 };
 
-export function FileUploader({ onSuccess, onError }: FileUploaderProps) {
+type UploadResponse = {
+  rows: number;
+  columns: string[];
+  preview?: Record<string, unknown>[];
+};
+
+export function FileUploader({
+  onSuccess,
+  onError,
+  accept = ".csv,.xlsx,.xls",
+  title = "Upload Data File",
+  description = "Drop your data file here or click to browse.",
+}: FileUploaderProps) {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [preview, setPreview] = useState<Record<string, unknown>[] | null>(
+    null,
+  );
 
   const fileLabel = useMemo(() => {
     if (!file) return "No file selected";
     return `${file.name} (${Math.round(file.size / 1024)} KB)`;
   }, [file]);
+
+  const validateFile = useCallback(
+    (file: File): boolean => {
+      const extension = file.name.split(".").pop()?.toLowerCase();
+      if (!extension) return false;
+
+      const isValidExtension = accept
+        .split(",")
+        .map((ext) => ext.trim().replace(".", "").toLowerCase())
+        .includes(extension);
+
+      if (!isValidExtension) {
+        onError(`Invalid file type. Accepted formats: ${accept}`);
+        return false;
+      }
+
+      const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+      if (file.size > MAX_FILE_SIZE) {
+        onError("File size exceeds 50MB limit");
+        return false;
+      }
+
+      return true;
+    },
+    [accept, onError],
+  );
 
   const handleDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
@@ -27,20 +71,23 @@ export function FileUploader({ onSuccess, onError }: FileUploaderProps) {
       e.stopPropagation();
       const files = e.dataTransfer.files;
       if (files.length > 0) {
-        const csvFile = files[0];
-        if (csvFile.name.endsWith(".csv")) {
-          setFile(csvFile);
-        } else {
-          onError("Please drop a .csv file");
+        const droppedFile = files[0];
+        if (validateFile(droppedFile)) {
+          setFile(droppedFile);
+          setPreview(null);
         }
       }
     },
-    [onError],
+    [validateFile],
   );
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.[0]) {
-      setFile(e.target.files[0]);
+      const selectedFile = e.target.files[0];
+      if (validateFile(selectedFile)) {
+        setFile(selectedFile);
+        setPreview(null);
+      }
     }
   };
 
@@ -64,8 +111,14 @@ export function FileUploader({ onSuccess, onError }: FileUploaderProps) {
         );
       }
 
-      const data = await response.json();
-      onSuccess(data.rows, data.columns);
+      const data: UploadResponse = await response.json();
+
+      // Set preview from response if available
+      if (data.preview) {
+        setPreview(data.preview);
+      }
+
+      onSuccess(data.rows, data.columns, file.name);
     } catch (error) {
       onError(error instanceof Error ? error.message : "Upload failed");
       setUploading(false);
@@ -76,11 +129,9 @@ export function FileUploader({ onSuccess, onError }: FileUploaderProps) {
     <div className="w-full rounded-[28px] border border-black/10 bg-[color:var(--surface)] p-8 shadow-[0_16px_40px_rgba(25,32,40,0.08)]">
       <div className="space-y-6">
         <div>
-          <h2 className="title-serif text-2xl font-semibold">
-            Upload CSV Data
-          </h2>
+          <h2 className="title-serif text-2xl font-semibold">{title}</h2>
           <p className="mt-2 text-sm text-[color:var(--muted)]">
-            Drop your supply chain data file here or click to browse.
+            {description}
           </p>
         </div>
 
@@ -93,7 +144,7 @@ export function FileUploader({ onSuccess, onError }: FileUploaderProps) {
           className="rounded-[20px] border-2 border-dashed border-[color:var(--accent)]/40 bg-[color:var(--accent-soft)]/20 p-8 text-center transition hover:border-[color:var(--accent)]/60 hover:bg-[color:var(--accent-soft)]/30"
         >
           <label
-            htmlFor="csv-input"
+            htmlFor="file-input"
             className="flex flex-col items-center gap-3 cursor-pointer"
           >
             <Upload className="h-10 w-10 text-[color:var(--accent)]" />
@@ -109,9 +160,9 @@ export function FileUploader({ onSuccess, onError }: FileUploaderProps) {
             </div>
           </label>
           <input
-            id="csv-input"
+            id="file-input"
             type="file"
-            accept=".csv"
+            accept={accept}
             className="hidden"
             onChange={handleChange}
           />
@@ -129,31 +180,67 @@ export function FileUploader({ onSuccess, onError }: FileUploaderProps) {
                 Processing...
               </>
             ) : (
-              "Upload & Start"
+              "Upload & Continue"
             )}
           </button>
         </div>
 
+        {/* File Format Info */}
         <div className="rounded-[16px] border border-black/10 bg-white/40 p-4 text-xs text-[color:var(--muted)] space-y-2">
           <div className="flex gap-2">
-            <CheckCircle className="h-4 w-4 flex-shrink-0 text-[color:var(--ok)]" />
+            <FileText className="h-4 w-4 flex-shrink-0 text-[color:var(--ok)]" />
             <span>
-              Requires: SOP1_Project, Resource_on_Product, TechnicalWeek
+              Supported formats: {accept.replace(/\./g, "").toUpperCase()}
             </span>
           </div>
           <div className="flex gap-2">
-            <CheckCircle className="h-4 w-4 flex-shrink-0 text-[color:var(--ok)]" />
-            <span>
-              Stock columns: Projected_Stock_Pipeline_Days,
-              Lower_Bound_Inventory_Target_Pipeline_Days,
-              Threshold_Insufficient_Stock
-            </span>
-          </div>
-          <div className="flex gap-2">
-            <AlertCircle className="h-4 w-4 flex-shrink-0 text-[color:var(--warning)]" />
-            <span>Max file size: 10 MB</span>
+            <FileText className="h-4 w-4 flex-shrink-0 text-[color:var(--ok)]" />
+            <span>Maximum file size: 50 MB</span>
           </div>
         </div>
+
+        {/* Preview Section */}
+        {preview && preview.length > 0 && (
+          <div className="rounded-[16px] border border-black/10 bg-white/40 p-4">
+            <h3 className="text-xs font-semibold uppercase tracking-[0.3em] text-[color:var(--muted)] mb-3">
+              Preview
+            </h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-black/10">
+                    {Object.keys(preview[0]).map((key) => (
+                      <th
+                        key={key}
+                        className="px-2 py-2 text-left text-[color:var(--muted)]"
+                      >
+                        {key}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.slice(0, 3).map((row, idx) => (
+                    <tr key={idx} className="border-b border-black/5">
+                      {Object.values(row).map((value, colIdx) => (
+                        <td
+                          key={colIdx}
+                          className="px-2 py-2 text-[color:var(--foreground)]"
+                        >
+                          {String(value)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="mt-2 text-xs text-[color:var(--muted)]">
+                Showing first {Math.min(3, preview.length)} rows of{" "}
+                {preview.length} total
+              </p>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
