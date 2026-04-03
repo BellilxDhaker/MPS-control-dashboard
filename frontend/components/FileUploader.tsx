@@ -103,11 +103,32 @@ export function FileUploader({
     formData.append("file", file);
 
     try {
-      const response = await fetch(`${API_BASE}/upload`, {
+      // NOTE: For multipart/form-data with credentials, some servers have issues.
+      // If upload still hangs, try removing credentials: "include"
+      const fetchOptions: RequestInit = {
         method: "POST",
         body: formData,
-        credentials: "include", // Required for CORS with credentials
-      });
+        // IMPORTANT: Do NOT set Content-Type header manually for multipart
+        // Browser automatically sets: "multipart/form-data; boundary=..."
+        // Setting it manually BREAKS the boundary formatting
+      };
+
+      // Only add credentials if we're on same origin
+      // For cross-origin multipart, skip credentials to avoid preflight issues
+      const apiUrl = new URL(`${API_BASE}/upload`, window.location.origin);
+      const isSameOrigin = apiUrl.origin === window.location.origin;
+      if (isSameOrigin) {
+        fetchOptions.credentials = "include";
+      }
+
+      console.log(`📤 Uploading ${file.name} (${Math.round(file.size / 1024)}KB)`);
+      console.log(`   Same-origin: ${isSameOrigin} | Using credentials: ${isSameOrigin}`);
+
+      const uploadStart = performance.now();
+      const response = await fetch(`${API_BASE}/upload`, fetchOptions);
+      const uploadEnd = performance.now();
+
+      console.log(`   Response received in ${Math.round(uploadEnd - uploadStart)}ms`);
 
       if (!response.ok) {
         const text = await response.text();
@@ -118,6 +139,7 @@ export function FileUploader({
         } catch {
           errorMessage = text || errorMessage;
         }
+        console.error(`❌ ${errorMessage}`);
         throw new Error(errorMessage);
       }
 
@@ -128,10 +150,13 @@ export function FileUploader({
         setPreview(data.preview);
       }
 
+      console.log(`✅ Upload successful: ${data.rows} rows, ${data.columns.length} columns`);
       onSuccess(data.rows, data.columns, file.name);
       setUploading(false);
     } catch (error) {
-      onError(error instanceof Error ? error.message : "Upload failed");
+      const errorMsg = error instanceof Error ? error.message : "Unknown error";
+      console.error(`❌ Upload error: ${errorMsg}`);
+      onError(errorMsg);
       setUploading(false);
     }
   };
