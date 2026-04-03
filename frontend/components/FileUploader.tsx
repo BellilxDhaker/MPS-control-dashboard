@@ -7,6 +7,10 @@ const API_BASE =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ||
   "http://localhost:8000";
 
+if (typeof window !== "undefined") {
+  console.log("API_BASE:", API_BASE);
+}
+
 type FileUploaderProps = {
   onSuccess: (rowCount: number, columns: string[], fileName: string) => void;
   onError: (message: string) => void;
@@ -105,10 +109,15 @@ export function FileUploader({
       });
 
       if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        throw new Error(
-          payload?.detail || `Upload failed with status ${response.status}`,
-        );
+        const text = await response.text();
+        let errorMessage = `Upload failed (${response.status})`;
+        try {
+          const payload = JSON.parse(text);
+          errorMessage = payload?.detail || errorMessage;
+        } catch {
+          errorMessage = text || errorMessage;
+        }
+        throw new Error(errorMessage);
       }
 
       const data: UploadResponse = await response.json();
@@ -119,6 +128,7 @@ export function FileUploader({
       }
 
       onSuccess(data.rows, data.columns, file.name);
+      setUploading(false);
     } catch (error) {
       onError(error instanceof Error ? error.message : "Upload failed");
       setUploading(false);
