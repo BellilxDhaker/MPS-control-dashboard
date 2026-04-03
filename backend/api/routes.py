@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -12,8 +14,8 @@ from services.processor import (
     clean_dataframe,
     get_dashboard_data,
     get_metadata,
-    parse_csv_lightweight,
-    parse_csv_robust,
+    parse_csv_lightweight_file,
+    parse_csv_robust_path,
 )
 from services.storage import FileStorage
 
@@ -29,10 +31,10 @@ file_storage = FileStorage()
 executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="cpu_worker_")
 
 
-def _process_csv_sync(file_content: bytes) -> dict[str, Any]:
+def _process_csv_sync(file_path: str) -> dict[str, Any]:
     """Synchronous CSV processing (runs in thread pool)."""
     try:
-        frame = parse_csv_robust(file_content)
+        frame = parse_csv_robust_path(file_path)
         frame = clean_dataframe(frame)
         return {"success": True, "frame": frame, "error": None}
     except Exception as e:
@@ -45,68 +47,117 @@ async def upload_file(
 ) -> UploadResponse:
     """
     FAST: Upload CSV file and return immediately.
-    
+
     Processing happens on-demand when data/metadata endpoints are called.
     This ensures Railway doesn't timeout waiting for background tasks.
     """
     import time
-    
+
     logger.info(f"📥 Upload started: {file.filename} (size: {file.size} bytes if known)")
     start_time = time.time()
-    
+
     # 1. Validate file format
     if not file.filename or not file.filename.lower().endswith(".csv"):
         logger.warning(f"❌ Invalid file extension: {file.filename}")
         raise HTTPException(status_code=400, detail="Only .csv files are supported.")
 
-    # 2. Read file bytes (async, non-blocking)
+    # 2. Stream file to disk in chunks (avoid large in-memory reads)
     try:
-        logger.info(f"📖 Reading file: {file.filename}")
+        logger.info(f"📖 Streaming file to disk: {file.filename}")
         read_start = time.time()
-        file_content = await file.read()
+
+        max_upload_mb = 60
+        max_upload_bytes = max_upload_mb * 1024 * 1024
+        chunk_size = 1024 * 1024  # 1 MB
+        total_bytes = 0
+
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            delete=False,
+            dir=str(file_storage.cache_dir),
+            prefix="upload_",
+            suffix=".csv",
+        ) as temp_file:
+            temp_path = temp_file.name
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > max_upload_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Max allowed is {max_upload_mb} MB.",
+                    )
+                temp_file.write(chunk)
+
         read_time = time.time() - read_start
-        size_mb = len(file_content) / 1024 / 1024
-        logger.info(f"✅ File read completed in {read_time:.2f}s ({size_mb:.1f} MB, {len(file_content)} bytes)")
-        
-        # Warn if file is very large
+        size_mb = total_bytes / 1024 / 1024
+        logger.info(
+            f"✅ File streamed to disk in {read_time:.2f}s ({size_mb:.1f} MB, {total_bytes} bytes)"
+        )
         if size_mb > 50:
             logger.warning(f"⚠️  Large file: {size_mb:.1f} MB - parsing may take time")
+    except HTTPException:
+        if "temp_path" in locals():
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+        raise
     except Exception as exc:
-        logger.error(f"❌ Failed to read file: {exc}")
+        if "temp_path" in locals():
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+        logger.error(f"❌ Failed to stream file: {exc}")
         raise HTTPException(status_code=400, detail="Unable to read file.") from exc
 
-    # 3. Quick parse to extract basic info (run in thread pool to avoid blocking)
+    # 3. Quick parse to extract basic info (streaming, no pandas)
     try:
         logger.info(f"🔍 Parsing CSV header and estimating row count...")
         parse_start = time.time()
         loop = asyncio.get_event_loop()
         rows, columns = await loop.run_in_executor(
             executor,
-            parse_csv_lightweight,
-            file_content,
+            parse_csv_lightweight_file,
+            temp_path,
         )
         parse_time = time.time() - parse_start
         logger.info(f"✅ Parse completed in {parse_time:.2f}s: {rows} rows, {len(columns)} columns")
     except Exception as exc:
+        try:
+            Path(temp_path).unlink(missing_ok=True)
+        except Exception:
+            pass
         logger.error(f"❌ Parse failed: {exc}")
         raise HTTPException(
             status_code=400,
             detail=f"Unable to parse CSV: {str(exc)[:100]}",
         ) from exc
 
-    # 4. Store raw file for lazy processing (non-blocking in-memory)
+    # 4. Store raw file metadata for lazy processing (no in-memory bytes)
     try:
         logger.info(f"💾 Storing raw file...")
-        upload_id = file_storage.store_raw_file(file_content, file.filename)
+        upload_id = file_storage.store_raw_file(
+            temp_path,
+            file.filename,
+            size_bytes=total_bytes,
+        )
         logger.info(f"✅ File stored with upload_id: {upload_id}")
     except Exception as exc:
+        try:
+            Path(temp_path).unlink(missing_ok=True)
+        except Exception:
+            pass
         logger.error(f"❌ Failed to store file: {exc}")
         raise HTTPException(status_code=500, detail="Failed to store file.") from exc
 
     # 5. Return FAST response (no processing wait)
     total_time = time.time() - start_time
     logger.info(f"✅ Upload endpoint completed in {total_time:.2f}s")
-    
+
     return UploadResponse(
         rows=rows,
         columns=columns,
@@ -117,7 +168,7 @@ async def upload_file(
 async def _get_or_process_dataframe() -> Any:
     """
     Get processed dataframe, processing on-demand if needed.
-    
+
     This ensures data is always ready when accessed, avoiding
     the unreliability of background tasks on Railway.
     """
@@ -127,8 +178,8 @@ async def _get_or_process_dataframe() -> Any:
         return frame
 
     # Get raw file if not processed yet
-    raw_file = file_storage.get_latest_raw_file()
-    if raw_file is None:
+    file_path = file_storage.get_latest_file_path()
+    if file_path is None:
         raise HTTPException(
             status_code=404,
             detail="No data loaded. Please upload a CSV file first.",
@@ -136,7 +187,7 @@ async def _get_or_process_dataframe() -> Any:
 
     # Process on-demand in thread pool (non-blocking)
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(executor, _process_csv_sync, raw_file)
+    result = await loop.run_in_executor(executor, _process_csv_sync, file_path)
 
     if not result["success"]:
         raise HTTPException(status_code=400, detail=f"Processing failed: {result['error']}")
@@ -151,7 +202,7 @@ async def _get_or_process_dataframe() -> Any:
 async def metadata() -> MetadataResponse:
     """
     Get available projects and resources.
-    
+
     Processes data on-demand if not already processed.
     """
     frame = await _get_or_process_dataframe()
@@ -166,7 +217,7 @@ async def dashboard_data(
 ) -> DashboardDataResponse:
     """
     Get computed dashboard data for a resource.
-    
+
     Heavy processing happens here in thread pool (non-blocking).
     Results are cached for repeated queries.
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import csv
 import io
+from pathlib import Path
 import string
 from datetime import date
 from typing import Any
@@ -31,79 +33,55 @@ def number_to_letters(n: int) -> str:
     return result
 
 
-def parse_csv_lightweight(file_content: bytes) -> tuple[int, list[str]]:
+def parse_csv_lightweight_file(file_path: str | Path) -> tuple[int, list[str]]:
     """
     LIGHTWEIGHT CSV parser for quick validation in /upload endpoint.
-    
+
     Only extracts:
     - Column names
-    - Estimated row count (fast, without loading all data)
-    
-    No heavy processing, minimal memory usage.
-    Returns immediately without data transformation.
-    """
-    # Try common formats quickly
-    priority_formats = [
-        (";", "latin-1"),
-        (";", "iso-8859-1"),
-        (",", "utf-8"),
-        (",", "latin-1"),
-        ("\t", "utf-8"),
-        ("|", "utf-8"),
-    ]
+    - Row count (streaming, no full-file buffering)
 
-    for delimiter, encoding in priority_formats:
+    No heavy processing, minimal memory usage.
+    """
+    path = Path(file_path)
+    if not path.exists():
+        raise ValueError("Uploaded file not found on disk.")
+
+    candidate_encodings = ["utf-8", "latin-1", "iso-8859-1", "cp1252"]
+    candidate_delimiters = [",", ";", "\t", "|"]
+    sniffer = csv.Sniffer()
+
+    for encoding in candidate_encodings:
         try:
-            # Read only header, don't load data rows
-            df = pd.read_csv(
-                io.BytesIO(file_content),
-                sep=delimiter,
-                encoding=encoding,
-                nrows=0,  # Don't load data, just header
-            )
-            columns = df.columns.tolist()
-            
-            # Fast row count: count newlines instead of loading all data
-            # This is much faster for large files
-            try:
-                row_count = file_content.decode(encoding).count('\n') - 1  # Subtract header line
-                row_count = max(0, row_count)  # Ensure non-negative
-            except Exception:
-                # Fallback if decode fails
-                row_count = 0
-            
-            return row_count, columns
+            with path.open("r", encoding=encoding, newline="") as handle:
+                sample = handle.read(64 * 1024)
+                if not sample:
+                    raise ValueError("Uploaded file is empty.")
+                try:
+                    dialect = sniffer.sniff(sample, delimiters=candidate_delimiters)
+                    delimiter = dialect.delimiter
+                except Exception:
+                    delimiter = ","
+
+                handle.seek(0)
+                reader = csv.reader(handle, delimiter=delimiter)
+                header = next(reader, [])
+                if not header:
+                    raise ValueError("CSV header row not found.")
+                columns = [str(col).strip() for col in header]
+                row_count = sum(1 for _ in reader)
+                return row_count, columns
         except Exception:
             continue
-
-    # Fallback: slower but thorough
-    all_delimiters = [";", ",", "\t", "|"]
-    all_encodings = ["latin-1", "utf-8", "iso-8859-1", "cp1252"]
-
-    for encoding in all_encodings:
-        for delimiter in all_delimiters:
-            try:
-                df = pd.read_csv(
-                    io.BytesIO(file_content),
-                    sep=delimiter,
-                    encoding=encoding,
-                    nrows=0,  # Header only
-                )
-                columns = df.columns.tolist()
-                # Fast count: use newlines
-                try:
-                    row_count = file_content.decode(encoding).count('\n') - 1
-                    row_count = max(0, row_count)
-                except Exception:
-                    row_count = 0
-                return row_count, columns
-            except Exception:
-                continue
 
     raise ValueError("Unable to parse CSV with any encoding/delimiter combination.")
 
 
-def clean_inventory_data(file_bytes: bytes, delimiter: str = ";", encoding: str = "latin1") -> pd.DataFrame:
+def clean_inventory_data(
+    file_bytes: bytes | str | Path,
+    delimiter: str = ";",
+    encoding: str = "latin1",
+) -> pd.DataFrame:
     """
     Clean inventory data during upload:
     1. Parse CSV and handle null values
@@ -114,7 +92,10 @@ def clean_inventory_data(file_bytes: bytes, delimiter: str = ";", encoding: str 
     to avoid creating 1500+ weeks when displaying all resources.
     """
     # 1. Load Data
-    df = pd.read_csv(io.BytesIO(file_bytes), sep=delimiter, encoding=encoding, dtype=str)
+    if isinstance(file_bytes, (str, Path)):
+        df = pd.read_csv(file_bytes, sep=delimiter, encoding=encoding, dtype=str)
+    else:
+        df = pd.read_csv(io.BytesIO(file_bytes), sep=delimiter, encoding=encoding, dtype=str)
 
     # 2. Basic Cleaning
     df = df.replace("<Null>", "0")
@@ -190,6 +171,42 @@ def parse_csv_robust(file_content: bytes) -> pd.DataFrame:
         for delimiter in all_delimiters:
             try:
                 return clean_inventory_data(file_content, delimiter=delimiter, encoding=encoding)
+            except Exception:
+                continue
+
+    raise ValueError(
+        "Unable to parse CSV with any encoding/delimiter combination."
+    )
+
+
+def parse_csv_robust_path(file_path: str | Path) -> pd.DataFrame:
+    """Parse CSV from disk with optimized handling for delimiter and encoding."""
+    path = Path(file_path)
+    if not path.exists():
+        raise ValueError("Uploaded file not found on disk.")
+
+    priority_formats = [
+        (";", "latin-1"),
+        (";", "iso-8859-1"),
+        (",", "utf-8"),
+        (",", "latin-1"),
+        ("\t", "utf-8"),
+        ("|", "utf-8"),
+    ]
+
+    for delimiter, encoding in priority_formats:
+        try:
+            return clean_inventory_data(path, delimiter=delimiter, encoding=encoding)
+        except Exception:
+            continue
+
+    all_delimiters = [";", ",", "\t", "|"]
+    all_encodings = ["latin-1", "utf-8", "iso-8859-1", "cp1252"]
+
+    for encoding in all_encodings:
+        for delimiter in all_delimiters:
+            try:
+                return clean_inventory_data(path, delimiter=delimiter, encoding=encoding)
             except Exception:
                 continue
 

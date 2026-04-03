@@ -26,26 +26,23 @@ class FileStorage:
 
         # In-memory cache
         self._latest_dataframe: pd.DataFrame | None = None
-        self._latest_raw_file: bytes | None = None
+        self._latest_file_path: str | None = None
         self._upload_metadata: dict[str, dict[str, Any]] = {}
         self._processed_frames: dict[str, pd.DataFrame] = {}
         self._data_cache: dict[str, tuple[Any, float]] = {}  # {key: (data, ttl_end_time)}
 
-    def store_raw_file(self, file_content: bytes, filename: str) -> str:
-        """Store raw file and return upload ID."""
+    def store_raw_file(self, file_path: str, filename: str, size_bytes: int | None = None) -> str:
+        """Store raw file metadata and return upload ID."""
         upload_id = str(uuid.uuid4())
 
-        # Cache latest raw file in memory (for immediate processing)
-        self._latest_raw_file = file_content
-
-        # Save to disk for persistence
-        file_path = self.cache_dir / f"{upload_id}_{filename}"
-        file_path.write_bytes(file_content)
+        # Cache latest file path in memory (for immediate processing)
+        self._latest_file_path = file_path
 
         # Store metadata
         self._upload_metadata[upload_id] = {
             "filename": filename,
             "file_path": str(file_path),
+            "size_bytes": size_bytes,
             "status": "PENDING",
             "error": None,
         }
@@ -74,9 +71,9 @@ class FileStorage:
         """Retrieve the most recently loaded dataframe."""
         return self._latest_dataframe
 
-    def get_latest_raw_file(self) -> bytes | None:
-        """Retrieve the latest raw file bytes for processing."""
-        return self._latest_raw_file
+    def get_latest_file_path(self) -> str | None:
+        """Retrieve the latest raw file path for processing."""
+        return self._latest_file_path
 
     def get_dataframe_by_id(self, upload_id: str) -> pd.DataFrame | None:
         """Retrieve specific dataframe by upload ID."""
