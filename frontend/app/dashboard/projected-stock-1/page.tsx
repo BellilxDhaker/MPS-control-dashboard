@@ -56,7 +56,9 @@ export default function ProjectedStock1() {
       }
 
       try {
-        const response = await fetch(`${API_BASE}/data?${params.toString()}`);
+        const response = await fetch(`${API_BASE}/data?${params.toString()}`, {
+          credentials: "include", // Required for CORS with credentials
+        });
         if (!response.ok) {
           const payload = await response.json().catch(() => null);
           throw new Error(payload?.detail || "Failed to fetch data");

@@ -19,6 +19,9 @@ export default function UploadPage() {
       // Fetch metadata to get resources
       const metadataResponse = await fetch(
         `${process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "http://localhost:8000"}/metadata`,
+        {
+          credentials: "include", // Required for CORS with credentials
+        },
       );
 
       if (!metadataResponse.ok) {

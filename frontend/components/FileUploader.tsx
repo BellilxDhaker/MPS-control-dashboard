@@ -106,6 +106,7 @@ export function FileUploader({
       const response = await fetch(`${API_BASE}/upload`, {
         method: "POST",
         body: formData,
+        credentials: "include", // Required for CORS with credentials
       });
 
       if (!response.ok) {
