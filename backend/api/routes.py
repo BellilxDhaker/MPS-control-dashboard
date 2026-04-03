@@ -65,7 +65,12 @@ async def upload_file(
         read_start = time.time()
         file_content = await file.read()
         read_time = time.time() - read_start
-        logger.info(f"✅ File read completed in {read_time:.2f}s ({len(file_content)} bytes)")
+        size_mb = len(file_content) / 1024 / 1024
+        logger.info(f"✅ File read completed in {read_time:.2f}s ({size_mb:.1f} MB, {len(file_content)} bytes)")
+        
+        # Warn if file is very large
+        if size_mb > 50:
+            logger.warning(f"⚠️  Large file: {size_mb:.1f} MB - parsing may take time")
     except Exception as exc:
         logger.error(f"❌ Failed to read file: {exc}")
         raise HTTPException(status_code=400, detail="Unable to read file.") from exc

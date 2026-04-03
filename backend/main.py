@@ -16,6 +16,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Set uvicorn logging to also show INFO
+logging.getLogger("uvicorn").setLevel(logging.INFO)
+logging.getLogger("uvicorn.access").setLevel(logging.INFO)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
