@@ -1,0 +1,163 @@
+# Railway Deployment Configuration Files
+
+## Option 1: Using Railway.toml (RECOMMENDED)
+
+Create `railway.toml` in project root:
+
+```toml
+# Railway Configuration
+[build]
+builder = "nixpacks"
+
+[deploy]
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+numReplicas = 1
+
+# Health check configuration
+healthcheckPath = "/health"
+healthcheckInterval = 30
+healthcheckTimeout = 10
+
+# Start command with optimizations
+startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT --workers 4 --loop uvloop --timeout-keep-alive 15 --timeout-graceful-shutdown 30"
+
+# Environment variables (set in Railway dashboard)
+[env]
+ENVIRONMENT = "production"
+DEBUG = "false"
+LOG_LEVEL = "info"
+REQUEST_TIMEOUT = "30"
+UPLOAD_TIMEOUT = "60"
+DATA_TIMEOUT = "120"
+MAX_UPLOAD_SIZE = "52428800"
+CACHE_DIR = "/tmp/mps_uploads"
+CLEANUP_INTERVAL = "3600"
+KEEP_LATEST = "5"
+```
+
+## Option 2: Using Procfile
+
+Create `Procfile` in project root:
+
+```
+web: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 4 --loop uvloop --timeout-keep-alive 15 --timeout-graceful-shutdown 30
+```
+
+## Option 3: Using package.json script (if monorepo)
+
+```json
+{
+  "scripts": {
+    "start:backend": "cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT --workers 4 --loop uvloop"
+  }
+}
+```
+
+## Environment Variables to Set in Railway Dashboard
+
+**Settings → Variables:**
+
+```
+ENVIRONMENT=production
+DEBUG=false
+LOG_LEVEL=info
+REQUEST_TIMEOUT=30
+UPLOAD_TIMEOUT=60
+DATA_TIMEOUT=120
+MAX_UPLOAD_SIZE=52428800
+CACHE_DIR=/tmp/mps_uploads
+CLEANUP_INTERVAL=3600
+KEEP_LATEST=5
+```
+
+## Performance Tuning Flags
+
+| Flag | Value | Purpose |
+|------|-------|---------|
+| `--host` | `0.0.0.0` | Bind to all interfaces (required for Railway) |
+| `--port` | `$PORT` | Use Railway's dynamic port |
+| `--workers` | `4` | 4 worker processes (adjust based on Railway dyno type) |
+| `--loop` | `uvloop` | Ultra-fast async event loop (included in uvicorn[standard]) |
+| `--timeout-keep-alive` | `15` | Drop idle connections after 15s |
+| `--timeout-graceful-shutdown` | `30` | Wait 30s for graceful shutdown |
+
+## Railway Health Check Configuration
+
+**Project Settings → Health Check:**
+
+- **Path**: `/health`
+- **Interval**: 30 seconds
+- **Timeout**: 10 seconds
+- **Unhealthy Threshold**: 3 consecutive failures
+
+## Load Testing After Deployment
+
+```bash
+# Test upload with large file
+time curl -X POST https://your-app.railway.app/upload \
+  -F "file=@large_data.csv" \
+  --max-time 5
+
+# Expected: Response within 1 second
+
+# Test metadata
+time curl https://your-app.railway.app/metadata
+
+# Expected: Response within 100ms
+
+# Test data query
+time curl "https://your-app.railway.app/data?resource=SAMPLE&variance=100"
+
+# Expected: Response within 5 seconds
+```
+
+## Database Configuration (Future Enhancement)
+
+If using PostgreSQL for persistent storage:
+
+```toml
+[plugins.postgres]
+version = "15"
+
+[env]
+DATABASE_URL = "${{ Plugins.Postgres.DATABASE_URL }}"
+```
+
+## Monitoring & Rollback
+
+```bash
+# View logs
+railway logs --follow
+
+# View in dashboard
+# Project → Deployments → View logs
+
+# Rollback if needed
+railway rollback <deployment-id>
+
+# Check metrics
+railway status
+```
+
+## Scaling Configuration
+
+**For high traffic, adjust in Railway dashboard:**
+
+- **Dyno Type**: `Standard` (recommended for production)
+- **Replicas**: 1-3 (start with 1, scale up as needed)
+- **Memory**: 512MB (default), increase to 1GB for large CSVs
+
+## Next Steps
+
+1. Push this configuration to your Railway project
+2. Set environment variables in Railway dashboard
+3. Deploy (via Git push or `railway up`)
+4. Monitor logs for cold starts and errors
+5. Run load tests to validate performance
+
+**Expected Results:**
+- ✅ /upload: <100ms response
+- ✅ No `net::ERR_HTTP2_PROTOCOL_ERROR`
+- ✅ Graceful handling of large files
+- ✅ Proper error tracking

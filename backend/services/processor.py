@@ -31,6 +31,68 @@ def number_to_letters(n: int) -> str:
     return result
 
 
+def parse_csv_lightweight(file_content: bytes) -> tuple[int, list[str]]:
+    """
+    LIGHTWEIGHT CSV parser for quick validation in /upload endpoint.
+    
+    Only extracts:
+    - Row count
+    - Column names
+    
+    No heavy processing, minimal memory usage.
+    Returns immediately without data transformation.
+    """
+    # Try common formats quickly
+    priority_formats = [
+        (";", "latin-1"),
+        (";", "iso-8859-1"),
+        (",", "utf-8"),
+        (",", "latin-1"),
+        ("\t", "utf-8"),
+        ("|", "utf-8"),
+    ]
+
+    for delimiter, encoding in priority_formats:
+        try:
+            # Read only header + count rows without full parsing
+            df = pd.read_csv(
+                io.BytesIO(file_content),
+                sep=delimiter,
+                encoding=encoding,
+                nrows=0,  # Don't load data, just header
+            )
+            # Count total rows efficiently
+            df_full = pd.read_csv(
+                io.BytesIO(file_content),
+                sep=delimiter,
+                encoding=encoding,
+                usecols=[df.columns[0]],  # Only read first column to save memory
+            )
+            row_count = len(df_full)
+            columns = df.columns.tolist()
+            return row_count, columns
+        except Exception:
+            continue
+
+    # Fallback: slower but thorough
+    all_delimiters = [";", ",", "\t", "|"]
+    all_encodings = ["latin-1", "utf-8", "iso-8859-1", "cp1252"]
+
+    for encoding in all_encodings:
+        for delimiter in all_delimiters:
+            try:
+                df = pd.read_csv(
+                    io.BytesIO(file_content),
+                    sep=delimiter,
+                    encoding=encoding,
+                )
+                return len(df), df.columns.tolist()
+            except Exception:
+                continue
+
+    raise ValueError("Unable to parse CSV with any encoding/delimiter combination.")
+
+
 def clean_inventory_data(file_bytes: bytes, delimiter: str = ";", encoding: str = "latin1") -> pd.DataFrame:
     """
     Clean inventory data during upload:

@@ -8,6 +8,7 @@ class UploadResponse(BaseModel):
 
     rows: int = Field(..., description="Number of rows processed")
     columns: list[str] = Field(..., description="Column names in dataset")
+    upload_id: str = Field(..., description="Unique upload ID for tracking")
 
 
 class DataPoint(BaseModel):
