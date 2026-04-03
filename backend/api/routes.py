@@ -1,6 +1,7 @@
 """API routes for the inventory system."""
 
 import asyncio
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -15,6 +16,9 @@ from services.processor import (
     parse_csv_robust,
 )
 from services.storage import FileStorage
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -45,29 +49,59 @@ async def upload_file(
     Processing happens on-demand when data/metadata endpoints are called.
     This ensures Railway doesn't timeout waiting for background tasks.
     """
+    import time
+    
+    logger.info(f"📥 Upload started: {file.filename} (size: {file.size} bytes if known)")
+    start_time = time.time()
+    
     # 1. Validate file format
     if not file.filename or not file.filename.lower().endswith(".csv"):
+        logger.warning(f"❌ Invalid file extension: {file.filename}")
         raise HTTPException(status_code=400, detail="Only .csv files are supported.")
 
     # 2. Read file bytes (async, non-blocking)
     try:
+        logger.info(f"📖 Reading file: {file.filename}")
+        read_start = time.time()
         file_content = await file.read()
+        read_time = time.time() - read_start
+        logger.info(f"✅ File read completed in {read_time:.2f}s ({len(file_content)} bytes)")
     except Exception as exc:
+        logger.error(f"❌ Failed to read file: {exc}")
         raise HTTPException(status_code=400, detail="Unable to read file.") from exc
 
-    # 3. Quick parse to extract basic info (minimal parsing only)
+    # 3. Quick parse to extract basic info (run in thread pool to avoid blocking)
     try:
-        rows, columns = parse_csv_lightweight(file_content)
+        logger.info(f"🔍 Parsing CSV header and estimating row count...")
+        parse_start = time.time()
+        loop = asyncio.get_event_loop()
+        rows, columns = await loop.run_in_executor(
+            executor,
+            parse_csv_lightweight,
+            file_content,
+        )
+        parse_time = time.time() - parse_start
+        logger.info(f"✅ Parse completed in {parse_time:.2f}s: {rows} rows, {len(columns)} columns")
     except Exception as exc:
+        logger.error(f"❌ Parse failed: {exc}")
         raise HTTPException(
             status_code=400,
             detail=f"Unable to parse CSV: {str(exc)[:100]}",
         ) from exc
 
-    # 4. Store raw file for lazy processing
-    upload_id = file_storage.store_raw_file(file_content, file.filename)
+    # 4. Store raw file for lazy processing (non-blocking in-memory)
+    try:
+        logger.info(f"💾 Storing raw file...")
+        upload_id = file_storage.store_raw_file(file_content, file.filename)
+        logger.info(f"✅ File stored with upload_id: {upload_id}")
+    except Exception as exc:
+        logger.error(f"❌ Failed to store file: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to store file.") from exc
 
     # 5. Return FAST response (no processing wait)
+    total_time = time.time() - start_time
+    logger.info(f"✅ Upload endpoint completed in {total_time:.2f}s")
+    
     return UploadResponse(
         rows=rows,
         columns=columns,

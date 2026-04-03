@@ -36,8 +36,8 @@ def parse_csv_lightweight(file_content: bytes) -> tuple[int, list[str]]:
     LIGHTWEIGHT CSV parser for quick validation in /upload endpoint.
     
     Only extracts:
-    - Row count
     - Column names
+    - Estimated row count (fast, without loading all data)
     
     No heavy processing, minimal memory usage.
     Returns immediately without data transformation.
@@ -54,22 +54,24 @@ def parse_csv_lightweight(file_content: bytes) -> tuple[int, list[str]]:
 
     for delimiter, encoding in priority_formats:
         try:
-            # Read only header + count rows without full parsing
+            # Read only header, don't load data rows
             df = pd.read_csv(
                 io.BytesIO(file_content),
                 sep=delimiter,
                 encoding=encoding,
                 nrows=0,  # Don't load data, just header
             )
-            # Count total rows efficiently
-            df_full = pd.read_csv(
-                io.BytesIO(file_content),
-                sep=delimiter,
-                encoding=encoding,
-                usecols=[df.columns[0]],  # Only read first column to save memory
-            )
-            row_count = len(df_full)
             columns = df.columns.tolist()
+            
+            # Fast row count: count newlines instead of loading all data
+            # This is much faster for large files
+            try:
+                row_count = file_content.decode(encoding).count('\n') - 1  # Subtract header line
+                row_count = max(0, row_count)  # Ensure non-negative
+            except Exception:
+                # Fallback if decode fails
+                row_count = 0
+            
             return row_count, columns
         except Exception:
             continue
@@ -85,8 +87,16 @@ def parse_csv_lightweight(file_content: bytes) -> tuple[int, list[str]]:
                     io.BytesIO(file_content),
                     sep=delimiter,
                     encoding=encoding,
+                    nrows=0,  # Header only
                 )
-                return len(df), df.columns.tolist()
+                columns = df.columns.tolist()
+                # Fast count: use newlines
+                try:
+                    row_count = file_content.decode(encoding).count('\n') - 1
+                    row_count = max(0, row_count)
+                except Exception:
+                    row_count = 0
+                return row_count, columns
             except Exception:
                 continue
 

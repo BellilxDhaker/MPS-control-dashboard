@@ -1,6 +1,7 @@
 """Main entry point for the Inventory Health API."""
 
 from contextlib import asynccontextmanager
+import logging
 import os
 
 from fastapi import FastAPI
@@ -8,13 +9,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from api.routes import router
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    print("🚀 API starting up...")
+    logger.info("🚀 API starting up...")
     yield
-    print("🛑 API shutting down...")
+    logger.info("🛑 API shutting down...")
 
 
 # Create FastAPI app
@@ -38,7 +46,7 @@ raw_origins = os.getenv(
 ALLOWED_ORIGINS = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 # Debug: Log the allowed origins
-print(f"CORS Allowed Origins: {ALLOWED_ORIGINS}")
+logger.info(f"✅ CORS Allowed Origins: {ALLOWED_ORIGINS}")
 
 app.add_middleware(
     CORSMiddleware,
