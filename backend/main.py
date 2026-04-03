@@ -12,13 +12,12 @@ from api.routes import router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    # Startup
     print("🚀 API starting up...")
     yield
-    # Shutdown
     print("🛑 API shutting down...")
 
 
+# Create FastAPI app
 app = FastAPI(
     title="Inventory Health API",
     description="MPS Control Dashboard backend",
@@ -26,30 +25,46 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Middleware stack (order matters)
+# ---------------------------
+# CORS CONFIGURATION
+# ---------------------------
 
-# 1. CORS - Allow frontend requests
-# Define allowed origins from environment variable, with fallback for local development
-ALLOWED_ORIGINS = os.getenv(
+# Get allowed origins from environment variable
+raw_origins = os.getenv(
     "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://127.0.0.1:3000"  # Local development
-).split(",")
+    "http://localhost:3000,http://127.0.0.1:3000"
+)
+
+ALLOWED_ORIGINS = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=ALLOWED_ORIGINS,  # must match frontend domain
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # allow all HTTP methods
+    allow_headers=["*"],  # allow all headers
     expose_headers=["Content-Length", "Content-Range"],
-    max_age=3600,  # Cache preflight requests for 1 hour
+    max_age=3600,
 )
 
-# 2. GZIP compression - reduce payload size
+# ---------------------------
+# OTHER MIDDLEWARE
+# ---------------------------
+
+# GZIP compression
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
+# ---------------------------
+# ROUTES
+# ---------------------------
 
 app.include_router(router)
+
+
+@app.get("/")
+async def root():
+    """Optional root endpoint."""
+    return {"message": "Inventory Health API is running"}
 
 
 @app.get("/health")
