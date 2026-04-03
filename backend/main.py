@@ -37,11 +37,14 @@ raw_origins = os.getenv(
 
 ALLOWED_ORIGINS = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
+# Debug: Log the allowed origins
+print(f"CORS Allowed Origins: {ALLOWED_ORIGINS}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,  # must match frontend domain
+    allow_origins=ALLOWED_ORIGINS,  # must match frontend domain exactly
     allow_credentials=True,
-    allow_methods=["*"],  # allow all HTTP methods
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],  # explicit methods
     allow_headers=["*"],  # allow all headers
     expose_headers=["Content-Length", "Content-Range"],
     max_age=3600,
