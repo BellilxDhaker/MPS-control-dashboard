@@ -1,10 +1,10 @@
 """API routes for the inventory system."""
 
 import asyncio
-from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from schemas.models import DashboardDataResponse, MetadataResponse, UploadResponse
 from services.processor import (
@@ -12,6 +12,7 @@ from services.processor import (
     get_dashboard_data,
     get_metadata,
     parse_csv_lightweight,
+    parse_csv_robust,
 )
 from services.storage import FileStorage
 
@@ -20,21 +21,29 @@ router = APIRouter()
 # Initialize file storage (in-memory cache)
 file_storage = FileStorage()
 
+# Thread pool executor for CPU-intensive work (3 workers for Railway)
+executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="cpu_worker_")
+
+
+def _process_csv_sync(file_content: bytes) -> dict[str, Any]:
+    """Synchronous CSV processing (runs in thread pool)."""
+    try:
+        frame = parse_csv_robust(file_content)
+        frame = clean_dataframe(frame)
+        return {"success": True, "frame": frame, "error": None}
+    except Exception as e:
+        return {"success": False, "frame": None, "error": str(e)}
+
 
 @router.post("/upload", response_model=UploadResponse)
 async def upload_file(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ) -> UploadResponse:
     """
-    FAST: Upload CSV file with minimal processing.
+    FAST: Upload CSV file and return immediately.
     
-    Returns immediately with:
-    - Row count
-    - Column names
-    - Upload ID for tracking
-    
-    Heavy processing happens asynchronously.
+    Processing happens on-demand when data/metadata endpoints are called.
+    This ensures Railway doesn't timeout waiting for background tasks.
     """
     # 1. Validate file format
     if not file.filename or not file.filename.lower().endswith(".csv"):
@@ -55,17 +64,10 @@ async def upload_file(
             detail=f"Unable to parse CSV: {str(exc)[:100]}",
         ) from exc
 
-    # 4. Store raw file for later processing
+    # 4. Store raw file for lazy processing
     upload_id = file_storage.store_raw_file(file_content, file.filename)
 
-    # 5. Queue heavy processing in background (non-blocking)
-    background_tasks.add_task(
-        _process_file_background,
-        upload_id,
-        file_content,
-    )
-
-    # 6. Return FAST response
+    # 5. Return FAST response (no processing wait)
     return UploadResponse(
         rows=rows,
         columns=columns,
@@ -73,28 +75,37 @@ async def upload_file(
     )
 
 
-async def _process_file_background(upload_id: str, file_content: bytes) -> None:
-    """Process file asynchronously in background (non-blocking HTTP response)."""
-    try:
-        # Run CPU-intensive work in thread pool to avoid blocking
-        loop = asyncio.get_event_loop()
-        frame = await loop.run_in_executor(
-            None,
-            _process_file_sync,
-            file_content,
+async def _get_or_process_dataframe() -> Any:
+    """
+    Get processed dataframe, processing on-demand if needed.
+    
+    This ensures data is always ready when accessed, avoiding
+    the unreliability of background tasks on Railway.
+    """
+    # Check if already processed
+    frame = file_storage.get_latest_dataframe()
+    if frame is not None:
+        return frame
+
+    # Get raw file if not processed yet
+    raw_file = file_storage.get_latest_raw_file()
+    if raw_file is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No data loaded. Please upload a CSV file first.",
         )
-        file_storage.store_processed_dataframe(upload_id, frame)
-    except Exception as exc:
-        file_storage.store_error(upload_id, str(exc))
 
+    # Process on-demand in thread pool (non-blocking)
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(executor, _process_csv_sync, raw_file)
 
-def _process_file_sync(file_content: bytes) -> Any:
-    """Synchronous heavy processing (runs in thread pool)."""
-    from services.processor import parse_csv_robust, clean_dataframe
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=f"Processing failed: {result['error']}")
 
-    frame = parse_csv_robust(file_content)
-    frame = clean_dataframe(frame)
-    return frame
+    # Cache the result for future calls
+    file_storage.set_latest_dataframe(result["frame"])
+
+    return result["frame"]
 
 
 @router.get("/metadata", response_model=MetadataResponse)
@@ -102,15 +113,9 @@ async def metadata() -> MetadataResponse:
     """
     Get available projects and resources.
     
-    Uses the most recently uploaded dataset.
+    Processes data on-demand if not already processed.
     """
-    frame = file_storage.get_latest_dataframe()
-    if frame is None:
-        raise HTTPException(
-            status_code=404,
-            detail="No data loaded. Please upload a CSV file first.",
-        )
-
+    frame = await _get_or_process_dataframe()
     meta = get_metadata(frame)
     return MetadataResponse(**meta)
 
@@ -123,19 +128,14 @@ async def dashboard_data(
     """
     Get computed dashboard data for a resource.
     
-    HEAVY PROCESSING happens here (aggregation, computations).
-    This endpoint is responsible for all data transformations.
+    Heavy processing happens here in thread pool (non-blocking).
+    Results are cached for repeated queries.
 
     Query Parameters:
     - resource: Resource_on_Product value (optional for aggregated view)
     - variance: % variance for stock simulation (default 100)
     """
-    frame = file_storage.get_latest_dataframe()
-    if frame is None:
-        raise HTTPException(
-            status_code=404,
-            detail="No data loaded. Please upload a CSV file first.",
-        )
+    frame = await _get_or_process_dataframe()
 
     if variance < 0 or variance > 100:
         raise HTTPException(
@@ -144,15 +144,25 @@ async def dashboard_data(
         )
 
     try:
-        # Run heavy computation in thread pool
+        # Check cache first (avoid recomputing same query)
+        cache_key = f"data_{resource}_{variance}"
+        cached = file_storage.get_cached_data(cache_key)
+        if cached is not None:
+            return DashboardDataResponse(**cached)
+
+        # Run computation in thread pool (non-blocking)
         loop = asyncio.get_event_loop()
         data = await loop.run_in_executor(
-            None,
+            executor,
             get_dashboard_data,
             frame,
             variance,
             resource,
         )
+
+        # Cache result for 3600 seconds (1 hour)
+        file_storage.cache_data(cache_key, data, ttl=3600)
+
         return DashboardDataResponse(**data)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
