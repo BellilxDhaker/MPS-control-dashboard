@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
 import { Sidebar } from "@/components/Sidebar";
 
@@ -10,6 +11,10 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const pathname = usePathname();
+
+  // Extract module ID from pathname (e.g., /dashboard/projected-stock-1 → projected-stock-1)
+  const currentModule = pathname.split("/dashboard/")[1] || "projected-stock-1";
 
   const toggleSidebar = () => {
     setSidebarOpen(!sidebarOpen);
@@ -54,12 +59,14 @@ export default function DashboardLayout({
           }`}
         >
           <div className="p-6">
-            <Sidebar currentModule="projected-stock-1" />
+            <Sidebar currentModule={currentModule} />
           </div>
         </aside>
 
         {/* Main Content - Full width when sidebar is closed */}
-        <main className="flex-1 overflow-y-auto">{children}</main>
+        <main className="flex-1 overflow-y-auto overflow-x-hidden w-full">
+          {children}
+        </main>
       </div>
     </div>
   );

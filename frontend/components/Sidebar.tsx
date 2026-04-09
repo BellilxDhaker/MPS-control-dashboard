@@ -18,6 +18,12 @@ const AVAILABLE_MODULES: Module[] = [
     description: "Analyze projected inventory levels",
     path: "/dashboard/projected-stock-1",
   },
+  {
+    id: "insufficient-stock-monitoring",
+    name: "Insufficient Stock Monitoring",
+    description: "Supply chain backlog risk analysis",
+    path: "/dashboard/insufficient-stock-monitoring",
+  },
   // Future modules can be added here
   // {
   //   id: "demand-forecast",

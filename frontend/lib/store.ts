@@ -23,6 +23,7 @@ type DashboardStore = {
   variance: number;
   dashboardData: DataPoint[] | null;
   currentModule: string | null; // Track which module is being viewed
+  selectedWeek: string | null; // Track selected week for timeline navigation
 
   // Actions
   setUploadedData: (data: UploadedData) => void;
@@ -30,6 +31,7 @@ type DashboardStore = {
   setVariance: (variance: number) => void;
   setDashboardData: (data: DataPoint[] | null) => void;
   setCurrentModule: (module: string | null) => void;
+  setSelectedWeek: (week: string | null) => void;
   clearAll: () => void;
 };
 
@@ -41,6 +43,7 @@ export const useDashboardStore = create<DashboardStore>()(
       variance: 100,
       dashboardData: null,
       currentModule: null,
+      selectedWeek: null,
 
       setUploadedData: (data) =>
         set({
@@ -58,6 +61,8 @@ export const useDashboardStore = create<DashboardStore>()(
 
       setCurrentModule: (module) => set({ currentModule: module }),
 
+      setSelectedWeek: (week) => set({ selectedWeek: week }),
+
       clearAll: () =>
         set({
           uploadedData: null,
@@ -65,6 +70,7 @@ export const useDashboardStore = create<DashboardStore>()(
           variance: 100,
           dashboardData: null,
           currentModule: null,
+          selectedWeek: null,
         }),
     }),
     {
