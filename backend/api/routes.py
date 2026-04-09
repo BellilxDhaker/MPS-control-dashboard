@@ -7,10 +7,17 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from schemas.models import DashboardDataResponse, MetadataResponse, UploadResponse
+from schemas.models import (
+    BacklogRiskResponse,
+    DashboardDataResponse,
+    MetadataResponse,
+    UploadResponse,
+)
 from services.processor import (
+    calculate_backlog_risk,
     clean_dataframe,
     get_dashboard_data,
     get_metadata,
@@ -206,6 +213,17 @@ async def metadata() -> MetadataResponse:
     Processes data on-demand if not already processed.
     """
     frame = await _get_or_process_dataframe()
+    
+    # Validate required columns are present
+    from services.processor import REQUIRED_COLUMNS
+    missing = REQUIRED_COLUMNS - set(frame.columns)
+    if missing:
+        logger.warning(f"⚠️ Missing required columns: {missing}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"CSV missing required columns: {', '.join(sorted(missing))}"
+        )
+    
     meta = get_metadata(frame)
     return MetadataResponse(**meta)
 
@@ -256,3 +274,117 @@ async def dashboard_data(
         return DashboardDataResponse(**data)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/backlog-risk", response_model=BacklogRiskResponse)
+async def backlog_risk() -> BacklogRiskResponse:
+    """
+    Get aggregated backlog risk data for insufficient stock monitoring dashboard.
+    
+    Calculates backlog risk from projected stock vs thresholds and returns
+    aggregated data by week, country, plant, customer, S&OP1, and resource.
+    """
+    frame = await _get_or_process_dataframe()
+    
+    try:
+        # Check cache first
+        cache_key = "backlog_risk"
+        cached = file_storage.get_cached_data(cache_key)
+        if cached is not None:
+            return BacklogRiskResponse(**cached)
+        
+        # Run computation in thread pool (non-blocking)
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(executor, calculate_backlog_risk, frame)
+        
+        # Cache result for 3600 seconds (1 hour)
+        file_storage.cache_data(cache_key, data, ttl=3600)
+        
+        return BacklogRiskResponse(**data)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/csv-diagnostics")
+async def csv_diagnostics() -> dict[str, Any]:
+    """
+    Diagnostic endpoint to verify CSV data quality and structure.
+    
+    Returns information about the loaded CSV file including:
+    - Column names and count
+    - Required vs optional columns
+    - Data type info
+    - Record counts by aggregation
+    - Date range
+    
+    Use this to debug if data is not appearing in dashboard sections.
+    """
+    frame = await _get_or_process_dataframe()
+    
+    if frame.empty:
+        raise HTTPException(status_code=404, detail="No data loaded. Please upload a CSV first.")
+    
+    from services.processor import REQUIRED_COLUMNS
+    
+    # Check which columns are present
+    columns_present = set(frame.columns)
+    required_missing = REQUIRED_COLUMNS - columns_present
+    optional_important = {"Customer", "Customer_Account", "SOP1_Project"} - columns_present
+    
+    # Get unique counts
+    unique_resources = frame["Resource_on_Product"].nunique() if "Resource_on_Product" in frame.columns else 0
+    unique_sop1s = frame["SOP1_Project"].nunique() if "SOP1_Project" in frame.columns else 0
+    unique_dates = frame["DATE"].nunique() if "DATE" in frame.columns else 0
+    
+    # Get date range
+    try:
+        frame["DATE"] = pd.to_datetime(frame["DATE"], errors="coerce")
+        date_min = frame["DATE"].min()
+        date_max = frame["DATE"].max()
+        date_range = {
+            "min": str(date_min) if pd.notna(date_min) else None,
+            "max": str(date_max) if pd.notna(date_max) else None,
+        }
+    except Exception:
+        date_range = {"min": None, "max": None}
+    
+    # Check for null percentages
+    null_percentages = {}
+    for col in REQUIRED_COLUMNS & columns_present:
+        null_count = frame[col].isna().sum()
+        null_percentage = (null_count / len(frame)) * 100 if len(frame) > 0 else 0
+        null_percentages[col] = {
+            "null_count": int(null_count),
+            "null_percentage": round(null_percentage, 2),
+        }
+    
+    diagnostics = {
+        "status": "✅ Data loaded successfully" if not required_missing else "❌ Missing required columns",
+        "total_rows": int(len(frame)),
+        "total_columns": int(len(frame.columns)),
+        "columns": sorted(list(columns_present)),
+        "required_columns": {
+            "present": sorted(list(REQUIRED_COLUMNS & columns_present)),
+            "missing": sorted(list(required_missing)),
+        },
+        "optional_important_columns": {
+            "present": sorted(list({"Customer", "Customer_Account", "SOP1_Project"} & columns_present)),
+            "missing": sorted(list(optional_important)),
+        },
+        "data_quality": {
+            "unique_resources": int(unique_resources),
+            "unique_sop1s": int(unique_sop1s),
+            "unique_dates": int(unique_dates),
+            "null_percentages": null_percentages,
+        },
+        "date_range": date_range,
+        "sample_rows": frame.head(3).to_dict("records") if len(frame) > 0 else [],
+    }
+    
+    # Log any issues
+    if required_missing:
+        logger.error(f"❌ CSV missing required columns: {required_missing}")
+    if optional_important:
+        logger.warning(f"⚠️ CSV missing optional but important columns: {optional_important}")
+    
+    return diagnostics

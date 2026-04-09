@@ -456,3 +456,230 @@ def get_dashboard_data(
         "variance": variance,
         "data": data,
     }
+
+
+def calculate_backlog_risk(frame: pd.DataFrame) -> dict[str, Any]:
+    """
+    Calculate aggregated backlog risk data from projected stock levels.
+    
+    Risk classification:
+    - Red (Critical): Projected_Stock < Threshold_Insufficient_Stock
+    - Orange (Medium): Threshold <= Projected_Stock < Lower_Bound
+    - Yellow (Low): Lower_Bound <= Projected_Stock (buffer)
+    - White (Neutral): No data or null values
+    """
+    if frame.empty:
+        raise ValueError("No data loaded.")
+    
+    filtered_frame = frame.copy()
+    
+    # Date parsing
+    filtered_frame["DATE"] = pd.to_datetime(filtered_frame["DATE"], errors="coerce")
+    filtered_frame = filtered_frame.sort_values("DATE").reset_index(drop=True)
+    
+    # Extract ISO week
+    iso = filtered_frame["DATE"].dt.isocalendar()
+    filtered_frame["ISO_Week"] = iso["week"]
+    filtered_frame["ISO_Year"] = iso["year"]
+    filtered_frame["TechnicalWeek"] = filtered_frame.apply(
+        lambda r: f"TW{int(r['ISO_Week'])} {int(r['ISO_Year'])}", axis=1
+    )
+    
+    # Fill missing values
+    filtered_frame["Projected_Stock_Pipeline_Days"] = filtered_frame["Projected_Stock_Pipeline_Days"].fillna(0)
+    filtered_frame["Threshold_Insufficient_Stock"] = filtered_frame["Threshold_Insufficient_Stock"].fillna(0)
+    filtered_frame["Lower_Bound_Inventory_Target_Pipeline_Days"] = filtered_frame["Lower_Bound_Inventory_Target_Pipeline_Days"].fillna(0)
+    
+    def classify_risk(row):
+        """Classify risk level based on stock vs thresholds."""
+        stock = row["Projected_Stock_Pipeline_Days"]
+        threshold = row["Threshold_Insufficient_Stock"]
+        lower_bound = row["Lower_Bound_Inventory_Target_Pipeline_Days"]
+        
+        if pd.isna(stock) or stock is None:
+            return "white"
+        if stock < threshold:
+            return "red"
+        if stock < lower_bound:
+            return "orange"
+        return "yellow"
+    
+    filtered_frame["risk_level"] = filtered_frame.apply(classify_risk, axis=1)
+    
+    # Extract country code from Resource_on_Product (chars at positions 1-2 after underscore)
+    def extract_country(resource):
+        parts = resource.split("_")
+        if len(parts) >= 2:
+            code = parts[1][:2].upper()
+            country_map = {
+                # Europe
+                "AT": "Austria", "BE": "Belgium", "BG": "Bulgaria", "HR": "Croatia",
+                "CY": "Cyprus", "CZ": "Czech Republic", "DK": "Denmark", "EE": "Estonia",
+                "FI": "Finland", "FR": "France", "DE": "Germany", "GR": "Greece",
+                "HU": "Hungary", "IE": "Ireland", "IT": "Italy", "LV": "Latvia",
+                "LT": "Lithuania", "LU": "Luxembourg", "MT": "Malta", "NL": "Netherlands",
+                "PL": "Poland", "PT": "Portugal", "RO": "Romania", "SK": "Slovakia",
+                "SI": "Slovenia", "ES": "Spain", "SE": "Sweden", "GB": "United Kingdom",
+                "CH": "Switzerland", "NO": "Norway", "RS": "Serbia", "UA": "Ukraine",
+                "RU": "Russia",
+                # North Africa & Middle East
+                "TN": "Tunisia", "MA": "Morocco", "EG": "Egypt", "DZ": "Algeria",
+                # Americas
+                "MX": "Mexico", "US": "United States", "CA": "Canada", "BR": "Brazil",
+                "AR": "Argentina", "CL": "Chile", "CO": "Colombia", "PE": "Peru",
+                "PY": "Paraguay", "VE": "Venezuela",
+                # Asia
+                "CN": "China", "JP": "Japan", "KR": "South Korea", "IN": "India",
+                "TH": "Thailand", "VN": "Vietnam", "ID": "Indonesia", "MY": "Malaysia",
+                "PH": "Philippines", "SG": "Singapore", "TW": "Taiwan", "HK": "Hong Kong",
+                # Middle East
+                "AE": "United Arab Emirates", "SA": "Saudi Arabia", "IL": "Israel",
+                "TR": "Turkey"
+            }
+            return country_map.get(code, "Unknown")
+        return "Unknown"
+    
+    filtered_frame["country"] = filtered_frame["Resource_on_Product"].apply(extract_country)
+    
+    # Extract plant (first part before underscore)
+    def extract_plant(resource):
+        parts = resource.split("_")
+        return parts[0] if parts else "Unknown"
+    
+    filtered_frame["plant"] = filtered_frame["Resource_on_Product"].apply(extract_plant)
+    
+    # Use SOP1_Project as S&OP1
+    filtered_frame["sop1"] = filtered_frame.get("SOP1_Project", "Unknown")
+    
+    # Extract customer data - ONLY from CSV, NO MOCK DATA
+    # Log extraction method for debugging
+    has_customer_column = "Customer" in filtered_frame.columns
+    has_customer_account_column = "Customer_Account" in filtered_frame.columns
+    
+    import sys
+    customer_extraction_method = "explicit_column"
+    if not has_customer_column and not has_customer_account_column:
+        customer_extraction_method = "extracted_from_resource"
+        print(f"📝 Customer data will be extracted from Resource_on_Product (no Customer/Customer_Account column found)", file=sys.stderr)
+    elif has_customer_column:
+        print(f"📝 Using explicit 'Customer' column for customer mapping", file=sys.stderr)
+    elif has_customer_account_column:
+        print(f"📝 Using explicit 'Customer_Account' column for customer mapping", file=sys.stderr)
+    
+    def map_customer(row):
+        """
+        Extract customer data ONLY from CSV:
+        1. If a Customer/Customer_Account column exists, use it
+        2. If not, extract from Resource_on_Product using the correct format:
+           PLANT_CUSTOMER_PART3_PART4_... → extract CUSTOMER (index 1)
+        3. NO hardcoded patterns or mock data
+        
+        Format: PART1_CUSTOMER_PART3_PART4_PART5
+        Customer is at index 1 after splitting by underscore
+        """
+        # Check if explicit Customer column exists in CSV
+        if "Customer" in filtered_frame.columns:
+            value = row.get("Customer")
+            if pd.notna(value):
+                return str(value).strip()
+        
+        if "Customer_Account" in filtered_frame.columns:
+            value = row.get("Customer_Account")
+            if pd.notna(value):
+                return str(value).strip()
+        
+        # Otherwise extract from Resource_on_Product
+        # Format: PLANT_CUSTOMER_PART3_PART4_PART5
+        # We want the CUSTOMER which is at index 1
+        resource = str(row.get("Resource_on_Product", "Unknown")).strip()
+        if not resource or resource == "Unknown":
+            return "Unknown"
+        
+        # Split by underscore and get the CUSTOMER part (index 1)
+        parts = resource.split("_")
+        if len(parts) >= 2:
+            customer = parts[1].upper()  # Get second part (customer account)
+            return customer if customer else "Unknown"
+        
+        # Fallback if format is unexpected
+        return "Unknown"
+    
+    # Apply customer mapping row by row
+    filtered_frame["customer"] = filtered_frame.apply(map_customer, axis=1)
+    
+    def count_risks(group):
+        """Count risks by level."""
+        risk_counts = group["risk_level"].value_counts()
+        return {
+            "red": int(risk_counts.get("red", 0)),
+            "orange": int(risk_counts.get("orange", 0)),
+            "yellow": int(risk_counts.get("yellow", 0)),
+            "white": int(risk_counts.get("white", 0)),
+        }
+    
+    # Aggregate by week
+    weeks_data = []
+    for week, group in filtered_frame.groupby("TechnicalWeek"):
+        risks = count_risks(group)
+        weeks_data.append({
+            "week": week,
+            **risks
+        })
+    
+    # Aggregate by country
+    countries_data = []
+    for country, group in filtered_frame.groupby("country"):
+        risks = count_risks(group)
+        countries_data.append({
+            "label": country,
+            **risks
+        })
+    
+    # Aggregate by plant
+    plants_data = []
+    for plant, group in filtered_frame.groupby("plant"):
+        risks = count_risks(group)
+        plants_data.append({
+            "label": plant,
+            **risks
+        })
+    
+    # Aggregate by customer
+    customers_data = []
+    for customer, group in filtered_frame.groupby("customer"):
+        risks = count_risks(group)
+        customers_data.append({
+            "label": customer,
+            **risks
+        })
+    
+    # Aggregate by S&OP1
+    sop1_data = []
+    for sop1, group in filtered_frame.groupby("sop1"):
+        risks = count_risks(group)
+        sop1_data.append({
+            "label": sop1,
+            **risks
+        })
+    
+    # Aggregate by Resource_on_Product
+    resources_data = []
+    for resource, group in filtered_frame.groupby("Resource_on_Product"):
+        risks = count_risks(group)
+        resources_data.append({
+            "resourceOnProduct": resource,
+            **risks
+        })
+    
+    # Sort by total risk descending
+    for lst in [countries_data, plants_data, customers_data, sop1_data, resources_data]:
+        lst.sort(key=lambda x: x["red"] + x["orange"] + x["yellow"] + x["white"], reverse=True)
+    
+    return {
+        "weeks": weeks_data,
+        "countries": countries_data,
+        "plants": plants_data,
+        "customers": customers_data,
+        "sop1s": sop1_data,
+        "resources": resources_data,
+    }

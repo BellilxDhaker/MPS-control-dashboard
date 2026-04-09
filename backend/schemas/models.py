@@ -33,3 +33,41 @@ class MetadataResponse(BaseModel):
     """Metadata about available resources."""
 
     resources: list[str]
+
+
+class RiskCount(BaseModel):
+    """Risk count for a category."""
+
+    red: int
+    orange: int
+    yellow: int
+    white: int
+
+
+class WeeklyRiskData(RiskCount):
+    """Weekly backlog risk data."""
+
+    week: str
+
+
+class CategoryRiskData(RiskCount):
+    """Risk data for a category (country, plant, customer, etc)."""
+
+    label: str
+
+
+class ResourceRiskData(RiskCount):
+    """Risk data for a single resource."""
+
+    resourceOnProduct: str
+
+
+class BacklogRiskResponse(BaseModel):
+    """Aggregated backlog risk data for insufficient stock monitoring."""
+
+    weeks: list[WeeklyRiskData]
+    countries: list[CategoryRiskData]
+    plants: list[CategoryRiskData]
+    customers: list[CategoryRiskData]
+    sop1s: list[CategoryRiskData]
+    resources: list[ResourceRiskData]
